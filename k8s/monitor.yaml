@@ -1,0 +1,12 @@
+apiVersion: azmonitoring.coreos.com/v1
+kind: PodMonitor
+metadata: {name: agent-runtime, namespace: run-lab}
+spec:
+  selector:
+    matchLabels: {app: agent-runtime}
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      metricRelabelings:
+        - {action: keep, sourceLabels: [__name__], regex: agent_runs_active}

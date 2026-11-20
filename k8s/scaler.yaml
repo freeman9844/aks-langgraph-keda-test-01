@@ -1,0 +1,24 @@
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata: {name: workspace-reader, namespace: run-lab}
+spec:
+  podIdentity:
+    provider: azure-workload
+    identityId: __CLIENT_ID__
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata: {name: agent-runtime, namespace: run-lab}
+spec:
+  scaleTargetRef: {name: agent-runtime}
+  minReplicaCount: 1
+  maxReplicaCount: 4
+  triggers:
+    - type: prometheus
+      metricType: AverageValue
+      metadata:
+        serverAddress: __ENDPOINT__
+        query: 'sum(__SELECTOR__)'
+        threshold: "2"
+        ignoreNullValues: "false"
+      authenticationRef: {name: workspace-reader}
