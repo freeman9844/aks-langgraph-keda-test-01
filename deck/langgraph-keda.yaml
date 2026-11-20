@@ -1,0 +1,192 @@
+deck:
+  title: "LangGraph 스트림으로 AKS Pod 확장하기"
+  level: L300
+  mode: fit
+  target_slides: 10
+  theme: light
+  brand: none
+  slide_numbers: true
+  topic_marker: false
+  footer: "AKS · LangGraph · KEDA 실측 검증   |   Korea Central   |   2026-11-20"
+slides:
+  - layout: content
+    title: "검증 구성 — 스트림이 열리는 곳과 Pod 수를 결정하는 곳"
+    title_size: 26
+    blocks:
+      - type: shapes
+        box: [40,110,1200,425]
+        items:
+          - {kind: round, x: 0, y: 0, w: 775, h: 400, line: "008577", fill: "FFFFFF", dash: true}
+          - {kind: text, x: 15, y: 10, w: 740, h: 42, text: "AKS  ·  고정 노드 D4s_v5 × 2", size: 18, bold: true, color: "006B5C", align: left}
+          - {kind: round, x: 20, y: 88, w: 225, h: 100, fill: "EEF3FB", line: "1F4E79"}
+          - {kind: text, x: 26, y: 96, w: 213, h: 82, text: "부하 클라이언트\nPod IP로 SSE 요청", size: 16}
+          - {kind: arrow, x: 245, y: 138, x2: 340, y2: 138, line: "008577", line_w: 3}
+          - {kind: round, x: 340, y: 72, w: 400, h: 132, fill: "E6F4F1", line: "008577"}
+          - {kind: text, x: 348, y: 80, w: 384, h: 114, text: "Agent Runtime\nFastAPI · LangGraph astream\n응답이 열려 있는 동안 Gauge +1", size: 16}
+          - {kind: arrow, x: 740, y: 138, x2: 845, y2: 138, line: "A65300", line_w: 3}
+          - {kind: round, x: 845, y: 72, w: 350, h: 132, fill: "FFF4E5", line: "FF8C00"}
+          - {kind: text, x: 851, y: 80, w: 338, h: 114, text: "Microsoft Foundry\nT6에서만 실제 모델 호출\ngpt-4.1-nano", size: 16}
+          - {kind: round, x: 340, y: 248, w: 400, h: 120, fill: "EEF3FB", line: "1F4E79"}
+          - {kind: text, x: 346, y: 254, w: 388, h: 108, text: "KEDA → HPA → Deployment\n워크스페이스 합계로\n희망 복제본 수 결정", size: 16}
+          - {kind: arrow, x: 540, y: 248, x2: 540, y2: 205, line: "1F4E79", line_w: 3}
+          - {kind: round, x: 845, y: 248, w: 350, h: 120, fill: "F3EEFB", line: "7B61FF"}
+          - {kind: text, x: 851, y: 254, w: 338, h: 108, text: "Managed Prometheus\nPodMonitor가 Pod별로 수집\nagent_runs_active", size: 16}
+          - {kind: arrow, x: 740, y: 198, x2: 845, y2: 255, line: "7B61FF", line_w: 2}
+          - {kind: arrow, x: 845, y: 310, x2: 740, y2: 310, line: "1F4E79", line_w: 3}
+      - {type: callout, box: [40,555,1200,75], text: "검증 질문: 스트림 수로 Pod를 늘릴 수 있는가? 응답 중인 Pod가 종료돼도 마지막 이벤트를 받을 수 있는가?"}
+    notes: |
+      오늘 볼 것은 서비스 전체가 아니라 두 가지 동작입니다. 그림 왼쪽의 클라이언트는 브라우저 대신 클러스터 안에서 대상 Pod에 직접 연결합니다. 가운데 런타임에서 응답을 열고 있는 동안 값을 세고, 아래쪽 제어 경로에서는 그 값을 이용해 복제본 수를 정합니다. 모델 호출 경로와 확장 판단 경로를 구분해서 봐 주세요. 오른쪽 위 Foundry는 마지막 종료 시험에서만 사용합니다.
+      왜 노드는 두 대로 고정했을까요? 새 노드를 확보하는 시간을 섞으면 Pod가 늦어진 이유를 구분하기 어렵기 때문입니다. 이번 결과로 영역 장애 대응이나 사용자 체감 속도를 판단하지는 않습니다. 첫 번째 질문인 스트림 계측부터 보겠습니다.
+    source: "infra/main.bicep; k8s/workload.yaml; k8s/monitor.yaml; k8s/scaler.yaml; infra/model.bicep"
+  - layout: section
+    section_no: "01"
+    title: "스트림 수 기반 확장"
+    subtitle: "T1~T5  ·  활성 스트림 0 → 6 → 0, Ready Pod 1 → 3 → 1"
+    notes: |
+      먼저 모델 없이 제어 가능한 응답 여섯 개를 엽니다. 토큰 속도와 모델 쿼터를 배제하고, 애플리케이션에서 센 값이 실제 복제본까지 이어지는지만 판단하기 위해서예요. 다음 장에서는 무엇을 하나로 세는지부터 확인합니다.
+  - layout: content
+    title: "계측 단위 — 토큰이 아니라 열려 있는 스트림 하나"
+    blocks:
+      - type: table
+        box: [40,110,1200,230]
+        columns: ["시점", "애플리케이션 동작", "스트림 1개의 Gauge 기여분"]
+        rows:
+          - ["첫 이벤트 대기", "track_inprogress() 안에서 graph.astream() 소비 시작", "0 → 1"]
+          - ["답변 전송 중", "delta를 여러 번 보내도 실행 구간을 벗어나지 않음", "1 유지"]
+          - ["정상 종료", "done을 보낸 뒤 생성기 종료", "1 → 0"]
+          - ["예외·연결 해제", "생성기를 닫고 계측 구간 정리", "1 → 0"]
+      - type: code
+        box: [40,348,1200,155]
+        title: "계측 위치 · 핵심 구간만 발췌"
+        code: |
+          with ACTIVE.track_inprogress():
+              async with aclosing(graph.astream(inputs, config=config, stream_mode="custom")) as events:
+                  async for event in events:
+                      yield f"event: delta\ndata: {json.dumps(event)}\n\n"
+      - {type: callout, box: [40,536,1200,80], text: "동접 사용자 수나 TCP 연결 수가 아니다. 이 런타임에서 실제로 소비 중인 최상위 LangGraph SSE 스트림 수다."}
+    notes: |
+      사용자가 한 명이라고 해서 그래프가 항상 실행 중인 것은 아니죠. 반대로 한 번 답변할 때 텍스트 조각이 백 개 나온다고 해서 실행 수가 백이 되지도 않습니다. 이 차이를 반영하려고 계측 위치를 응답 함수의 호출부가 아니라 비동기 생성기를 실제로 소비하는 구간에 두었습니다. 이 구간 안에 있는 동안만 스트림 하나가 전체 값에 하나를 더합니다.
+      실패하거나 사용자가 창을 닫을 때 빠지지 않으면 유령 부하 때문에 Pod를 계속 늘릴 수 있습니다. 그래서 오류와 실제 HTTP 연결 해제를 로컬 테스트로 별도 확인했습니다. 다음 장에서는 이 숫자를 어떤 조건에서 성공의 근거로 썼는지 보겠습니다.
+    source: "app/main.py; tests/test_runs.py; tests/test_entrypoint.py"
+  - layout: content
+    title: "검증 매트릭스 — 확장 요청과 실제 준비 상태를 따로 판정"
+    blocks:
+      - type: table
+        box: [40,105,1200,410]
+        first_col_bold: true
+        col_widths: [1,3,5,1.3]
+        columns: ["ID", "조작", "통과 기준", "결과"]
+        rows:
+          - ["T1", "부하 없이 시작", "workspace에서 실제 0 · 희망 1 · Ready 1", "PASS"]
+          - ["T2", "처음 Pod에 SSE 6개 유지", "앱 Gauge와 workspace 합계가 모두 6", "PASS"]
+          - ["T3", "목표 2스트림/Pod 적용", "HPA 희망 3뿐 아니라 실제 Ready도 3", "PASS"]
+          - ["T4", "새 Pod에 짧은 SSE 요청", "새 UID에서 Gauge 1 → 0 · done 수신", "PASS"]
+          - ["T5", "처음의 스트림 모두 해제", "workspace 0 · 희망 1 · Ready 1 · 노드 2 유지", "PASS"]
+      - {type: callout, box: [40,548,1200,75], text: "빈 Prometheus 응답은 부하 0이 아니다. 초기 시계열이 나타나고 HPA가 이를 읽은 뒤에만 실험을 시작했다."}
+    notes: |
+      순서대로 읽으시면 됩니다. 처음에는 앱이 뜨는 것만 확인하지 않고 워크스페이스에서 실제 영이 보이기를 기다렸습니다. 여섯 개를 넣는 곳은 처음의 Pod 한 개입니다. 그래야 새 Pod에 우연히 나누어 들어간 것을 지표가 잘 맞은 것으로 오해하지 않아요. 이후에는 HPA가 요구하는 개수와 지금 트래픽을 받을 수 있는 개수를 따로 확인합니다.
+      네 번째 시험에서는 새 Pod의 주소를 직접 선택했습니다. 따라서 신규 Pod가 동작했다는 것은 입증하지만, 여섯 기존 연결이 그쪽으로 옮겨졌다는 뜻은 아닙니다. 마지막에는 반대 방향까지 확인합니다. 다음 장에는 이 판정을 가능하게 한 설정을 모았습니다.
+    source: "scripts/Verify.ps1; evidence/sse-cycle.json"
+  - layout: content
+    title: "확장 설정 — 전체 합계 6을 Pod당 목표 2와 비교"
+    blocks:
+      - type: stats
+        box: [40,112,1200,150]
+        style: card
+        items: [{value: "15초", label: "PodMonitor 수집 주기"}, {value: "2", label: "AverageValue 목표"}, {value: "1~4", label: "허용 복제본 범위"}]
+      - type: table
+        box: [40,300,1200,245]
+        columns: ["설정 위치", "실제 구성", "이유"]
+        rows:
+          - ["Prometheus 쿼리", "대상 cluster·namespace·Pod로 제한한 sum", "다른 앱의 스트림이나 중복 시계열 제외"]
+          - ["ScaledObject", "metricType: AverageValue · threshold: '2'", "합계 6이면 목표 복제본은 3"]
+          - ["TriggerAuthentication", "Workload Identity로 workspace 조회", "클러스터에 조회용 비밀 키를 저장하지 않음"]
+      - {type: callout, box: [40,575,1200,65], text: "2는 이 실험에서 확장을 재현할 값이다. 운영 Pod가 처리할 수 있는 동시 요청 한도가 아니다."}
+    notes: |
+      합계를 계산할 때 대상 범위를 먼저 좁힙니다. 다른 앱이나 다른 실험의 값이 더해지면 복제본 수가 늘어나도 올바른 신호인지 알 수 없거든요. 한 Pod가 한 시계열로 보이는지 확인한 뒤 합계를 사용했습니다. 수집은 십오 초 간격이고, KEDA는 자체 키 대신 워크로드 아이덴티티로 워크스페이스를 조회합니다.
+      희망 개수는 여섯을 둘로 나눈 셋입니다. 최소 한 개, 최대 네 개이므로 셋은 허용 범위 안에 있습니다. 그러나 둘이라는 숫자가 모델 품질이나 지연 목표를 고려한 결과는 아니에요. 실제 서비스라면 슬롯 수와 모델 쿼터를 함께 살펴야 합니다. 이제 이 설정이 실제로 언제 반영됐는지 보겠습니다.
+    source: "k8s/monitor.yaml; k8s/scaler.yaml; scripts/Common.ps1"
+  - layout: content
+    title: "실측 결과 — 스트림 6개 관측 후 약 14초 만에 Ready 3개"
+    blocks:
+      - type: table
+        box: [40,106,740,385]
+        columns: ["시각 (KST)", "활성 SSE 합계", "HPA 희망", "Ready", "관측 의미"]
+        rows:
+          - ["20:07:46", "0", "1", "1", "초기 상태"]
+          - ["20:08:32", "6", "1", "1", "workspace에 6이 먼저 반영"]
+          - ["20:08:39", "6", "3", "1", "희망 수 변경, 새 Pod 기동 중"]
+          - ["20:08:46", "6", "3", "3", "확장 확인"]
+          - ["20:10:04", "0", "3", "3", "부하 해제 확인"]
+          - ["20:14:55", "0", "1", "1", "약 4분 50초 후 원복"]
+      - type: chart
+        box: [795,108,445,365]
+        kind: column
+        title: "검증 단계별 관측 수"
+        categories: ["부하 전", "확장 후", "해제 직후", "축소 후"]
+        series:
+          - {name: "활성 SSE", values: [0,6,0,0], color: "008577"}
+          - {name: "Ready Pod", values: [1,3,3,1], color: "1F4E79"}
+        legend: bottom
+      - {type: callout, box: [40,530,1200,95], text: "새 SSE 버전의 관측값이다. 최초 백그라운드 Run 버전의 22초와 구분한다. 시각 차이는 표본 간격을 포함하며 SLA가 아니다."}
+    notes: |
+      표의 핵심은 여섯이 찍힌 시각과 Pod 세 개가 준비된 시각이 같지 않다는 점입니다. 먼저 워크스페이스가 부하를 보고, 그다음 HPA가 희망 복제본을 바꾸고, 마지막으로 Deployment가 준비된 Pod 세 개를 보고했습니다. 초 단위 표시를 잘라 썼고 시간 차이는 원래 표본에서 반올림했습니다.
+      축소는 더 천천히 진행됐습니다. 그래프가 모두 끝나 영이 된 뒤에도 한동안 세 개를 유지했어요. 이 간격을 응답 종료 유예와 혼동하지 말아 주세요. 여기서는 몇 개를 남길지를 결정하는 시간을 본 겁니다. 다음 섹션에서는 삭제 대상으로 이미 선택된 Pod 안에서 무슨 일이 일어나는지를 확인합니다.
+    source: "evidence/sse-cycle.json (최신 SSE 버전, UTC를 KST로 변환)"
+  - layout: section
+    section_no: "02"
+    title: "스트림 종료 검증"
+    subtitle: "T6  ·  실제 Foundry 텍스트 응답에서 신규 요청 거절과 기존 스트림 완료를 동시에 확인"
+    notes: |
+      앞에서 복제본 수가 줄어드는 동작을 봤습니다. 그렇다면 아직 답을 쓰고 있는 Pod가 종료 대상으로 선택되면 어떻게 될까요? 이번에는 선택을 운에 맡기지 않고 첫 응답 조각을 받은 Pod를 직접 삭제해 종료 경로를 따로 검증합니다.
+  - layout: content
+    title: "종료 시간 예산 — preStop 10초는 전체 120초에 포함"
+    blocks:
+      - type: table
+        box: [40,115,1200,320]
+        col_widths: [2,3.8,4.2]
+        columns: ["순서", "설정 또는 동작", "기존 SSE와 신규 요청"]
+        rows:
+          - ["① Pod 삭제 시작", "terminationGracePeriodSeconds: 120", "Pod 종료 유예 시간 시작"]
+          - ["② preStop 실행", "드레인 파일 생성 후 sleep 10", "기존 SSE 유지 · 신규 스트림과 readiness는 503"]
+          - ["③ SIGTERM", "Uvicorn graceful shutdown: 최대 105초", "진행 중 응답이 끝나면 먼저 종료 가능"]
+          - ["④ 유예 만료", "남은 프로세스 강제 종료 가능", "120초를 넘는 답변은 완료 보장 불가"]
+      - {type: callout, box: [40,478,1200,95], text: "10 + 105 = 115초로 5초의 여유를 둔다. HPA 축소 안정화 시간은 이 예산에 포함되지 않는다."}
+    notes: |
+      쿠버네티스에 백이십 초를 적는 것만으로 응답이 보호되지는 않습니다. 앱과 서버가 그 시간을 어떻게 사용할지도 정해야 해요. 여기서는 먼저 파일을 만들어 종료 중이라고 표시합니다. 그 순간부터 신규 스트림과 readiness에는 서비스를 사용할 수 없다는 응답을 보냅니다. 이미 열려 있는 생성기는 그대로 진행합니다.
+      십 초 뒤 종료 신호를 받은 유비콘은 현재 요청을 마무리할 시간을 최대 백오 초까지 줍니다. 이 둘을 더하면 전체 예산보다 오 초가 짧습니다. 답이 빨리 끝난다면 시간을 다 쓸 필요는 없어요. 이 시간표가 실제 모델 응답에서도 맞는지는 다음 장에서 클라이언트 관점으로 판정합니다.
+    source: "k8s/workload.yaml; app/Dockerfile; app/main.py"
+  - layout: content
+    title: "T6 결과 — 새 요청은 503, 진행 중인 모델 답변은 완료"
+    blocks:
+      - type: stats
+        box: [40,110,1200,165]
+        style: card
+        items: [{value: "503", label: "종료 대상의 신규 SSE"}, {value: "106개", label: "기존 SSE 텍스트 이벤트"}, {value: "62.5초", label: "삭제 요청 → 완료 확인"}]
+      - type: table
+        box: [40,315,1200,220]
+        columns: ["조작", "대조한 관측", "판정"]
+        rows:
+          - ["첫 delta 후 해당 Pod 정상 삭제", "삭제 직전 active=1 · 최종 done=true", "기존 응답 완료"]
+          - ["같은 Pod IP로 신규 스트림 시도", "드레인 표시 후 HTTP 503 확인", "신규 유입 거절"]
+      - {type: callout, box: [40,560,1200,72], text: "모델: gpt-4.1-nano · delta당 시험용 지연 0.6초. 106은 토큰 수가 아니며, 62.5초는 모델 성능이 아니다."}
+    notes: |
+      실제 모델의 첫 번째 텍스트 조각이 올 때까지 기다린 뒤, 로컬 Gauge가 하나인 것을 보고 해당 Pod를 정상 삭제했습니다. 그러면 같은 주소를 보는 두 클라이언트의 경험이 갈립니다. 새로 들어가려는 쪽은 오백삼을 받았고, 이미 읽고 있던 쪽은 다음 조각들을 계속 받았어요. 연결이 조용히 끊긴 것을 성공으로 오인하지 않도록 마지막 done 이벤트까지 확인했습니다.
+      응답이 충분히 길어지도록 테스트 코드에서 조각마다 지연을 주었습니다. 따라서 이 수치는 모델 벤치마크나 사용자 첫 토큰 지연을 뜻하지 않습니다. HPA가 바로 그 Pod를 고른 것도 아닙니다. 마지막 장에서 검증된 사실과 운영 전에 남은 항목을 나눠 보겠습니다.
+    source: "evidence/model-drain.json; scripts/VerifyDrain.ps1; app/probe.py"
+  - layout: content
+    title: "운영 적용 — 자동 확장과 응답 완료의 보장 범위"
+    blocks:
+      - type: table
+        box: [40,110,1200,375]
+        columns: ["항목", "이번 검증으로 확인한 것", "운영 도입 전 확인할 것"]
+        rows:
+          - ["확장 신호", "활성 SSE 합계로 Pod 1 → 3 → 1", "실제 요청 혼합에서 Pod당 목표·모델 쿼터 산정"]
+          - ["종료 처리", "대상 Pod의 기존 SSE 완료와 신규 503", "BFF·Istio·게이트웨이까지 포함한 브라우저 시험"]
+          - ["긴 응답", "120초 유예 내 한 번의 종료 성공", "유예를 넘는 Run의 체크포인트·재연결"]
+          - ["첫 토큰 지연", "TTFT는 이 실험의 판정 대상이 아님", "사용자 p95와 모델·검색·실행 대기 분리 측정"]
+      - {type: callout, box: [40,525,1200,100], text: "재현: Deploy.ps1 -WithFoundry → Verify.ps1 → VerifyDrain.ps1 → 전용 그룹 삭제. 스케일링만 확인할 때는 모델 배포를 생략한다."}
+    notes: |
+      이번 결과를 설계서에 적는다면 활성 스트림 수로 Agent Runtime을 확장하고 정상 종료 절차에서 기존 답변이 끝날 시간을 준다고 표현할 수 있습니다. 그러나 모든 스트림이 절대로 끊기지 않는다고 쓰면 검증 범위를 넘습니다. 중간 프록시가 먼저 연결을 끊을 수도 있고, 유예 시간보다 실행이 길 수도 있기 때문입니다.
+      운영 적용 전에는 실제 브라우저 경로를 넣어 보시고 짧은 요청과 긴 요청이 섞였을 때의 첫 토큰 지연을 따로 재세요. 모델이 병목이라면 Pod를 늘리는 것만으로는 해결되지 않습니다. 다시 실험하려면 저장소의 스크립트와 관측 파일을 함께 보시면 됩니다. 이상으로 결과 공유를 마치겠습니다.
+    source: "README.md; evidence/sse-cycle.json; evidence/model-drain.json"

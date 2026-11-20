@@ -6,6 +6,10 @@ KEDA가 조회하는 `agent_runs_active`는 이제 백그라운드 작업이 아
 
 ## 무엇을 어떻게 검증했나
 
+**검증 장표(10장):** [PowerPoint 다운로드](deck/langgraph-keda.pptx) · [발표 노트](deck/langgraph-keda.script.md) · [편집용 YAML](deck/langgraph-keda.yaml) · [슬라이드별 PNG](deck/langgraph-keda_render/). 1~6장은 스트림 계측과 KEDA 확장, 7~10장은 실제 모델 응답 중 종료와 운영 적용 범위를 다룬다.
+
+[![장표 전체 미리보기](deck/langgraph-keda_render/contact_sheet.png)](deck/langgraph-keda.pptx)
+
 `LangGraph 그래프 실행 → Pod별 agent_runs_active → PodMonitor → Azure Managed Prometheus → KEDA → HPA → Deployment`
 
 | ID | 수행 및 판정 기준 | 결과 |
