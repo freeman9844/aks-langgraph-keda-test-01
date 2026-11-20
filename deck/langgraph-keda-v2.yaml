@@ -2,7 +2,7 @@ deck:
   title: "LangGraph SSE · KEDA 검증 — 설계와 결과"
   level: L300
   mode: fit
-  target_slides: 7
+  target_slides: 8
   theme: light
   brand: none
   slide_numbers: true
@@ -139,6 +139,43 @@ slides:
     notes: |
       왼쪽 코드는 핵심 구간만 줄여 적었습니다. 응답 객체를 만들 때가 아니라 그래프에서 이벤트를 소비하는 동안 Gauge를 하나 더합니다. 실제 코드에서는 생성기를 명시적으로 닫아 연결 해제나 예외가 나도 값을 돌려놓습니다. 오른쪽의 둘은 실험을 재현할 목표이지 운영 서버의 물리적 한도는 아닙니다. 아래 표는 삭제가 시작된 뒤의 이야기입니다. 앱이 먼저 종료 중이라고 표시해야 새로운 연결이 그 Pod에 들어오지 않습니다. 십 초 뒤 서버가 종료 신호를 받으면 이미 열린 요청을 기다립니다. 이 과정은 HPA가 축소 결정을 보류하는 시간과는 무관합니다. 마지막으로 운영에 그대로 옮길 수 있는 결론과 그렇지 않은 부분을 구분하겠습니다.
     source: "app/main.py; app/Dockerfile; k8s/workload.yaml; k8s/monitor.yaml; k8s/scaler.yaml"
+  - layout: content
+    title: "KEDA와 Managed Prometheus 연결 — 수집, 인증, 조회"
+    blocks:
+      - type: table
+        box: [48,112,1184,196]
+        header_fill: "0078D4"
+        columns: ["단계", "설정 위치", "이 실험에서 연결한 대상"]
+        rows:
+          - ["① 수집", "AKS 관리형 메트릭 + PodMonitor", "런타임 /metrics → 15초마다 수집 → DCR → Azure Monitor workspace"]
+          - ["② 인증", "AKS OIDC + Workload Identity", "kube-system:keda-operator ↔ 사용자 할당 관리 ID"]
+          - ["③ 권한", "워크스페이스 범위 Azure RBAC", "관리 ID에 Monitoring Data Reader 부여"]
+      - type: code
+        box: [48,327,668,218]
+        title: "ScaledObject · prometheus 트리거 발췌"
+        size: 12
+        code: |
+          metricType: AverageValue
+          authenticationRef: {name: workspace-reader}
+          metadata:
+            serverAddress: <prometheusQueryEndpoint>
+            query: >-
+              sum(agent_runs_active{cluster="<AKS 이름>",
+              namespace="run-lab",pod=~"agent-runtime-.+"})
+            threshold: "2"
+            ignoreNullValues: "false"
+      - type: cards
+        box: [740,327,492,218]
+        columns: 1
+        style: accent-left
+        items:
+          - {title: "조회 자격 증명 · workspace-reader", body: "TriggerAuthentication에서 provider를 azure-workload로, identityId를 관리 ID의 클라이언트 ID로 지정합니다. KEDA는 수집 주소가 아니라 워크스페이스의 Prometheus 쿼리 주소를 조회합니다.", color: "0078D4"}
+      - {type: callout, box: [48,565,1184,82], text: "연결 확인: 워크스페이스에서 실제 0 조회 → HPA ScalingActive=True → 부하 6에서 희망·Ready 3. 빈 응답은 0이 아니다."}
+    notes: |
+      앞에서 본 Gauge가 있어도 KEDA가 그 값을 자동으로 발견하지는 않습니다. 수집과 조회를 따로 연결해야 하거든요. 먼저 AKS에서 관리형 메트릭을 켜고 데이터 수집 규칙인 DCR의 목적지를 Azure Monitor workspace로 지정합니다. PodMonitor는 run-lab에서 app 라벨이 agent-runtime인 Pod의 http 포트를 찾아 /metrics를 십오 초마다 읽도록 설정합니다. 여기까지는 값을 저장하는 쪽입니다.
+      그럼 누가 그 값을 읽을까요? 앱 Pod가 아니라 KEDA 오퍼레이터입니다. AKS의 KEDA 추가 기능과 OIDC 발급자, Workload Identity를 켭니다. 사용자 할당 관리 ID에 클러스터 발급자와 kube-system의 keda-operator 서비스 계정을 신뢰하는 페더레이션 자격 증명을 만들고, 워크스페이스 범위에서 Monitoring Data Reader 역할을 줍니다. 이 실험의 배포 스크립트는 서비스 계정에 해당 클라이언트 ID를 주석으로 붙이고 오퍼레이터를 재시작합니다.
+      이제 왼쪽 설정을 보세요. 꺾쇠 부분은 배포 시 실제 값으로 치환합니다. ScaledObject가 같은 네임스페이스의 workspace-reader를 참조하면 KEDA가 그 ID로 쿼리 주소에 접근합니다. 이때 다른 클러스터나 앱이 섞이지 않도록 라벨로 거른 뒤 합산합니다. 합계가 여섯이고 목표가 Pod당 둘이면 희망 복제본은 셋이죠. 빈 시계열은 유휴 상태의 영이 아닙니다. 데이터가 없다면 수집 경로를, 조회가 거절되면 오퍼레이터의 자격 증명과 역할을 먼저 확인하세요. 마지막으로 이번 검증 범위와 리소스 상태를 정리하겠습니다.
+    source: "infra/main.bicep; k8s/monitor.yaml; k8s/scaler.yaml; scripts/Deploy.ps1; scripts/Common.ps1; https://learn.microsoft.com/azure/azure-monitor/containers/integrate-keda"
   - layout: content
     title: "결과 정리 — 검증 범위와 리소스 상태"
     blocks:

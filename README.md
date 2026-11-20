@@ -55,9 +55,15 @@ AKS에서 LangGraph가 처리 중인 SSE 응답 수로 Pod를 확장할 수 있�
 
 <a href="deck/langgraph-keda-v2_render/slide_06.png"><img src="deck/langgraph-keda-v2_render/slide_06.png" alt="graph.astream 계측, KEDA 목표 2, Pod 전체 유예 120초 구성" width="960"></a>
 
-#### 7. 결과 정리
+#### 7. KEDA와 Managed Prometheus 연결
 
-<a href="deck/langgraph-keda-v2_render/slide_07.png"><img src="deck/langgraph-keda-v2_render/slide_07.png" alt="기능 시험 6건과 운영 적용 전에 별도 확인할 사항" width="960"></a>
+수집은 [PodMonitor](k8s/monitor.yaml), 조회 인증과 확장 기준은 [TriggerAuthentication·ScaledObject](k8s/scaler.yaml)에 설정합니다. [인프라 정의](infra/main.bicep)와 [배포 스크립트](scripts/Deploy.ps1)에서 KEDA 서비스 계정과 워크스페이스 권한을 연결하는 부분을 볼 수 있습니다.
+
+<a href="deck/langgraph-keda-v2_render/slide_07.png"><img src="deck/langgraph-keda-v2_render/slide_07.png" alt="PodMonitor 수집, KEDA Workload Identity 인증, 워크스페이스 PromQL 조회와 HPA 판정" width="960"></a>
+
+#### 8. 결과 정리
+
+<a href="deck/langgraph-keda-v2_render/slide_08.png"><img src="deck/langgraph-keda-v2_render/slide_08.png" alt="기능 시험 6건과 운영 적용 전에 별도 확인할 사항" width="960"></a>
 
 ## 무엇을 어떻게 검증했나
 

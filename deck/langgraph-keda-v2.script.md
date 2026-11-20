@@ -1,6 +1,6 @@
 # 발표 스크립트 — LangGraph SSE · KEDA 검증 — 설계와 결과
 
-7장 · L300 · 예상 4분 44초
+8장 · L300 · 예상 6분 28초
 
 ## 1. 검증 샘플 구성 — 스트림 수로 AKS Pod 확장
 _48초 · 261자_
@@ -40,7 +40,16 @@ _51초 · 269자_
 
 > 출처: app/main.py; app/Dockerfile; k8s/workload.yaml; k8s/monitor.yaml; k8s/scaler.yaml
 
-## 7. 결과 정리 — 검증 범위와 리소스 상태
+## 7. KEDA와 Managed Prometheus 연결 — 수집, 인증, 조회
+_1분 44초 · 664자_
+
+앞에서 본 Gauge가 있어도 KEDA가 그 값을 자동으로 발견하지는 않습니다. 수집과 조회를 따로 연결해야 하거든요. 먼저 AKS에서 관리형 메트릭을 켜고 데이터 수집 규칙인 DCR의 목적지를 Azure Monitor workspace로 지정합니다. PodMonitor는 run-lab에서 app 라벨이 agent-runtime인 Pod의 http 포트를 찾아 /metrics를 십오 초마다 읽도록 설정합니다. 여기까지는 값을 저장하는 쪽입니다.
+그럼 누가 그 값을 읽을까요? 앱 Pod가 아니라 KEDA 오퍼레이터입니다. AKS의 KEDA 추가 기능과 OIDC 발급자, Workload Identity를 켭니다. 사용자 할당 관리 ID에 클러스터 발급자와 kube-system의 keda-operator 서비스 계정을 신뢰하는 페더레이션 자격 증명을 만들고, 워크스페이스 범위에서 Monitoring Data Reader 역할을 줍니다. 이 실험의 배포 스크립트는 서비스 계정에 해당 클라이언트 ID를 주석으로 붙이고 오퍼레이터를 재시작합니다.
+이제 왼쪽 설정을 보세요. 꺾쇠 부분은 배포 시 실제 값으로 치환합니다. ScaledObject가 같은 네임스페이스의 workspace-reader를 참조하면 KEDA가 그 ID로 쿼리 주소에 접근합니다. 이때 다른 클러스터나 앱이 섞이지 않도록 라벨로 거른 뒤 합산합니다. 합계가 여섯이고 목표가 Pod당 둘이면 희망 복제본은 셋이죠. 빈 시계열은 유휴 상태의 영이 아닙니다. 데이터가 없다면 수집 경로를, 조회가 거절되면 오퍼레이터의 자격 증명과 역할을 먼저 확인하세요. 마지막으로 이번 검증 범위와 리소스 상태를 정리하겠습니다.
+
+> 출처: infra/main.bicep; k8s/monitor.yaml; k8s/scaler.yaml; scripts/Deploy.ps1; scripts/Common.ps1; https://learn.microsoft.com/azure/azure-monitor/containers/integrate-keda
+
+## 8. 결과 정리 — 검증 범위와 리소스 상태
 _51초 · 265자_
 
 결론은 두 문장으로 나눌 수 있습니다. 계측할 수 있는 실제 SSE 응답 수로 런타임의 복제본을 조절할 수 있었습니다. 또 정상 종료 경로에서 새 연결을 거절하면서 기존 모델 응답을 마칠 수 있었습니다. 그러나 임의의 장애에서 스트림이 반드시 보호된다는 뜻은 아닙니다. 클라이언트가 실제로 거치는 프록시와 게이트웨이는 이 실험에서 제외했고, 유예 시간을 넘기는 답변의 재개도 확인하지 않았습니다. 실험이 끝난 뒤 전용 그룹뿐 아니라 두 개의 관리 그룹도 삭제된 것을 확인했습니다. 다시 실행할 때도 마지막에 이 확인을 별도로 해 주세요. 운영 전 다음 시험은 사용자가 실제로 받는 첫 토큰 지연과 중간 프록시를 포함한 연결 종료입니다.
