@@ -25,10 +25,23 @@ class Entrypoint(unittest.TestCase):
                 try:
                     with urllib.request.urlopen(f"http://127.0.0.1:{port}/ready", timeout=1) as r:
                         self.assertTrue(json.load(r)["ready"])
-                        return
+                        break
                 except OSError:
                     time.sleep(.1)
-            self.fail("readiness timeout")
+            else:
+                self.fail("readiness timeout")
+            base = f"http://127.0.0.1:{port}"
+            with urllib.request.urlopen(base + "/streams/disconnect", timeout=3) as stream:
+                self.assertEqual(stream.readline().strip(), b"event: delta")
+                with urllib.request.urlopen(base + "/metrics", timeout=2) as r:
+                    self.assertIn(b"\nagent_runs_active 1.0\n", r.read())
+            for _ in range(50):
+                with urllib.request.urlopen(base + "/metrics", timeout=2) as r:
+                    if b"\nagent_runs_active 0.0\n" in r.read():
+                        break
+                time.sleep(.05)
+            else:
+                self.fail("disconnected SSE client still counted")
         finally:
             p.terminate()
             p.wait(timeout=10)

@@ -6,9 +6,17 @@ $file = "$LabDir\evidence-$(Get-Date -Format yyyyMMdd-HHmmss).json"
 function Nodes { ((k get nodes -o name) | Sort-Object) -join ',' }
 function Pods { (k -n run-lab get pods -l app=agent-runtime -o json | ConvertFrom-Json).items }
 function Invoke-Pod($Pod,$Method,$Path) {
+    if ($Method -eq 'POST') {
+        $id = $Path.Split('/')[-1]
+        k -n run-lab exec load-client '--' python probe.py start $id "http://$($Pod.status.podIP):8000/streams/$id"
+        return
+    }
     $url = "http://$($Pod.status.podIP):8000/$Path"
     $cmd = @(Get-ProbeArgs $url $Method)
     k @cmd
+    if ($Method -eq 'DELETE') {
+        k -n run-lab exec load-client '--' python probe.py done $Path.Split('/')[-1]
+    }
 }
 function Local-Gauge($Pod) {
     $line = @(Invoke-Pod $Pod GET metrics | Where-Object { $_ -match '^agent_runs_active ([0-9.]+)$' })
@@ -44,7 +52,7 @@ if ($before.Count -ne 1) { throw 'Start with exactly one runtime Pod' }
 $initial = $before[0]
 $idsToStart = 1..6 | ForEach-Object { "probe-$_" }
 try {
-    Wait-Phase baseline 0 1 300
+    Wait-Phase baseline 0 1 900
     foreach ($id in $idsToStart) { Invoke-Pod $initial POST "runs/$id" | Out-Null }
     if ((Local-Gauge $initial) -ne 6) { throw 'Original Pod did not start 6 runs' }
     Wait-Phase loaded 6 3 300

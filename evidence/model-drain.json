@@ -1,0 +1,9 @@
+{
+  "done": true,
+  "model": "gpt-4.1-nano",
+  "rejectedNewStream": 503,
+  "finalDeltas": 106,
+  "activeBeforeDelete": 1,
+  "secondsAfterDelete": 62.5,
+  "firstDeltas": 1
+}

@@ -1,6 +1,6 @@
 # AKS에서 LangGraph 동시 Run 수로 Pod 확장하기
 
-모델은 호출하지 않는다. 실제 비동기 그래프가 이벤트를 기다리는 동안 Gauge가 증가한다. 고정 노드 2대에서 **Run 0 → 6 → 0**, **Ready Pod 1 → 3 → 1**을 대조한다. TTFT나 운영 용량을 검증하는 실험은 아니다.
+KEDA가 조회하는 `agent_runs_active`는 이제 백그라운드 작업이 아니라 **실제 HTTP SSE 응답에서 `graph.astream()`을 소비 중인 개수**다. 토큰마다 증가하지 않고 스트림당 1이며, 정상 완료·예외·연결 해제 시 감소한다. 확장 시험은 제어 가능한 LangGraph SSE 6개로, 종료 시험은 Microsoft Foundry 모델의 실제 텍스트 delta로 수행한다. TTFT나 운영 용량 실험은 아니다.
 
 **검증 결과: T1~T5 모두 PASS** (2026-11-20, Korea Central). 실험 후 전용 리소스 그룹, AKS 노드 그룹, Azure Monitor 관리 그룹의 삭제를 확인했다.
 
@@ -15,6 +15,9 @@
 | T3 확장 | 목표 2 Run/Pod에서 `ceil(6/2) = 3`. 희망 수만이 아니라 Ready도 3이 되어야 통과 | PASS |
 | T4 신규 Pod | 원래 Pod와 UID가 다른 Pod에 짧은 Run을 보내 로컬 Gauge `1 → 0` 확인. 기존 Run 이동은 요구하지 않음 | PASS |
 | T5 축소 | 부하를 해제한 뒤 workspace 실제 0, HPA 희망 1, Ready 1 복귀. 전 구간 노드 수 2 유지 | PASS |
+| T6 응답 중 종료 | Foundry `gpt-4.1-nano` 첫 delta 이후 해당 Pod를 정상 삭제. 새 요청은 503, 기존 클라이언트는 106개 delta와 `done`을 수신. 삭제 요청부터 완료 확인까지 62.5초 | PASS |
+
+T6은 축소 대상을 운에 맡기지 않고 **진행 중인 Pod를 지정 삭제**해 동일한 Kubernetes 종료 경로를 시험했다. `preStop`은 신규 스트림 거절 표시를 만들고 10초 대기한다. 이 10초는 Pod 전체 유예 120초에 포함된다. Uvicorn은 SIGTERM 후 최대 105초 동안 기존 요청을 기다린다. 모델 스트림에는 시험을 위해 delta당 0.6초 지연을 주었다. **62.5초는 모델 성능 수치가 아니며, 120초를 넘는 답변까지 보장하지 않는다.** Istio·BFF는 시험 경로에 없다. [SSE 확장 관측](evidence/sse-cycle.json) · [모델 종료 관측](evidence/model-drain.json)
 
 | 자료 | 내용 |
 |---|---|
@@ -23,7 +26,7 @@
 | [실행 스크립트](scripts/) · [자동 테스트](tests/) | 생성·배포·실측 판정·정리, Python 및 Pester 회귀 테스트 |
 | [수행 증거](evidence/README.md) · [관측 JSON](evidence/scale-cycle.json) | 재조회 가능한 94개 관측점과 판정 근거 |
 
-### Korea Central 실측 (2026-11-20, KST)
+### 최초 백그라운드 Run 버전 실측 (2026-11-20, KST)
 
 | 최초 관측 시각 | workspace의 Run 합계 | HPA 희망 Pod | Ready Pod |
 |---|---:|---:|---:|
@@ -45,11 +48,14 @@ $p = @{ SubscriptionId = (az account show --query id -o tsv); Region = 'koreacen
 .\scripts\Lab.ps1 -Action Preview @p
 # 여기서 구독·리전·예산을 확인하고 별도 승인을 받은 뒤에만 진행
 .\scripts\Lab.ps1 -Action Create @p
-.\scripts\Deploy.ps1
+.\scripts\Deploy.ps1 -WithFoundry  # T1~T5만 실행할 때는 스위치 생략
 .\scripts\Verify.ps1
+.\scripts\VerifyDrain.ps1  # -WithFoundry로 배포한 경우만
 # 성공·실패와 관계없이 실험 전용 그룹을 확인한 후 삭제
 .\scripts\Lab.ps1 -Action Remove @p
 ```
+
+`-WithFoundry`는 실험 그룹에 키 인증을 끈 Foundry 계정, `stream-lab` 모델 배포(GlobalStandard, 사용량 과금), 서비스 계정 전용 Workload Identity와 추론 역할을 만든다. 고정된 공개 테스트 문장만 보내며 GlobalStandard는 한국 내 추론을 보장하지 않는다.
 
 ### Azure 리소스 없이 로컬 회귀 테스트 실행
 

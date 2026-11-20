@@ -16,10 +16,15 @@ spec:
     metadata:
       labels: {app: agent-runtime}
     spec:
+      terminationGracePeriodSeconds: 120
       automountServiceAccountToken: false
       containers:
         - name: runtime
           image: __IMAGE__
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-ec", "touch /tmp/runlab-draining; sleep 10"]
           ports: [{name: http, containerPort: 8000}]
           readinessProbe:
             httpGet: {path: /ready, port: http}

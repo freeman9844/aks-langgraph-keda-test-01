@@ -1,62 +1,92 @@
 import asyncio
-import logging
-from typing import TypedDict
+from contextlib import aclosing
+import json
+import os
+from pathlib import Path
+from typing import Literal, TypedDict
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi.responses import StreamingResponse
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
 
 
 class State(TypedDict):
     gate: asyncio.Event
+    backend: str
+    pace: float
 
 
-async def wait_for_release(state: State):
-    await state["gate"].wait()
+async def respond(state: State):
+    emit = get_stream_writer()
+    if state["backend"] == "probe":
+        emit("ready")
+        await state["gate"].wait()
+    else:
+        from azure.identity.aio import WorkloadIdentityCredential
+        from openai import AsyncOpenAI
+
+        async with WorkloadIdentityCredential() as credential:
+            token = await credential.get_token("https://cognitiveservices.azure.com/.default")
+            async with AsyncOpenAI(api_key=token.token, base_url=os.environ["MODEL_ENDPOINT"] + "/openai/v1/") as client:
+                stream = await client.chat.completions.create(
+                    model="stream-lab", stream=True, max_completion_tokens=160,
+                    messages=[{"role": "user", "content": "Write the numbers one to forty in English, separated by commas."}],
+                )
+                async with stream:
+                    async for chunk in stream:
+                        if chunk.choices and (text := chunk.choices[0].delta.content):
+                            emit(text)
+                            await asyncio.sleep(state["pace"])
     return {}
 
 
 builder = StateGraph(State)
-builder.add_node("wait", wait_for_release)
-builder.add_edge(START, "wait")
-builder.add_edge("wait", END)
+builder.add_node("respond", respond)
+builder.add_edge(START, "respond")
+builder.add_edge("respond", END)
 graph = builder.compile()
-ACTIVE = Gauge("agent_runs_active", "Active top-level graph executions")
+ACTIVE = Gauge("agent_runs_active", "Active LangGraph SSE streams")
 app = FastAPI()
-runs: dict[str, tuple[asyncio.Event, asyncio.Task]] = {}
+runs: dict[str, asyncio.Event] = {}
+DRAIN = Path("/tmp/runlab-draining")
 
 
-async def run_graph(gate: asyncio.Event, timeout: float = 900):
+async def stream_run(graph, inputs, config=None):
     with ACTIVE.track_inprogress():
-        async with asyncio.timeout(timeout):
-            await graph.ainvoke({"gate": gate})
+        async with aclosing(graph.astream(inputs, config=config, stream_mode="custom")) as events:
+            async for event in events:
+                yield f"event: delta\ndata: {json.dumps(event)}\n\n"
+        yield "event: done\ndata: {}\n\n"
 
 
-async def execute(run_id: str, gate: asyncio.Event):
-    try:
-        await run_graph(gate)
-    except TimeoutError:
-        logging.warning("Run expired: %s", run_id)
-    finally:
-        runs.pop(run_id, None)
-
-
-@app.post("/runs/{run_id}", status_code=202)
-async def start(run_id: str):
+@app.get("/streams/{run_id}")
+async def start(run_id: str, backend: Literal["probe", "foundry"] = "probe", pace: float = Query(0, ge=0, le=1)):
+    if DRAIN.exists():
+        raise HTTPException(503, "Draining")
     if run_id in runs:
-        raise HTTPException(409, "Run already active")
-    gate = asyncio.Event()
-    runs[run_id] = (gate, asyncio.create_task(execute(run_id, gate)))
-    return {"id": run_id}
+        raise HTTPException(409, "Stream already active")
+    if backend == "foundry" and not os.getenv("MODEL_ENDPOINT"):
+        raise HTTPException(503, "Model not configured")
+    gate = runs[run_id] = asyncio.Event()
+
+    async def body():
+        try:
+            async with asyncio.timeout(900), aclosing(stream_run(graph, {"gate": gate, "backend": backend, "pace": pace})) as events:
+                async for event in events:
+                    yield event
+        finally:
+            runs.pop(run_id, None)
+
+    return StreamingResponse(body(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 
 @app.delete("/runs/{run_id}", status_code=204)
 async def release(run_id: str):
     if run_id not in runs:
         raise HTTPException(404, "Run not active on this pod")
-    gate, task = runs[run_id]
-    gate.set()
-    await task
+    runs[run_id].set()
     return Response(status_code=204)
 
 
@@ -67,4 +97,6 @@ async def metrics():
 
 @app.get("/ready")
 async def ready():
+    if DRAIN.exists():
+        raise HTTPException(503, "Draining")
     return {"ready": True}

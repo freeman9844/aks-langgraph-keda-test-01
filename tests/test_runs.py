@@ -1,27 +1,29 @@
 import asyncio
 import unittest
 
-from app.main import ACTIVE, run_graph, graph
+from app.main import ACTIVE, graph, stream_run
 
 
-class Runs(unittest.IsolatedAsyncioTestCase):
-    async def test_six_real_runs(self):
-        events = [asyncio.Event() for _ in range(6)]
-        tasks = [asyncio.create_task(run_graph(event)) for event in events]
-        await asyncio.sleep(.1)
+class Streams(unittest.IsolatedAsyncioTestCase):
+    async def test_six_open_streams_and_release(self):
+        gate = asyncio.Event()
+        streams = [stream_run(graph, {"backend": "probe", "gate": gate, "pace": 0}) for _ in range(6)]
+        for event in await asyncio.gather(*(anext(s) for s in streams)):
+            self.assertIn("event: delta", event)
         self.assertEqual(ACTIVE.collect()[0].samples[0].value, 6)
-        for event in events:
-            event.set()
-        await asyncio.gather(*tasks)
+        await streams.pop().aclose()
+        self.assertEqual(ACTIVE.collect()[0].samples[0].value, 5)
+        gate.set()
+        for s in streams:
+            self.assertEqual([frame async for frame in s], ["event: done\ndata: {}\n\n"])
         self.assertEqual(ACTIVE.collect()[0].samples[0].value, 0)
 
-    async def test_cancel_and_error(self):
-        task = asyncio.create_task(run_graph(asyncio.Event()))
-        await asyncio.sleep(.05)
-        task.cancel()
-        with self.assertRaises(asyncio.CancelledError):
-            await task
-        self.assertEqual(ACTIVE.collect()[0].samples[0].value, 0)
-        with self.assertRaises(TimeoutError):
-            await run_graph(asyncio.Event(), timeout=.02)
+    async def test_failed_graph_releases_gauge(self):
+        class Broken:
+            async def astream(self, *args, **kwargs):
+                yield "started"
+                raise ValueError("model error")
+        with self.assertRaisesRegex(ValueError, "model error"):
+            async for _ in stream_run(Broken(), {}):
+                pass
         self.assertEqual(ACTIVE.collect()[0].samples[0].value, 0)
