@@ -1,14 +1,63 @@
-# AKS에서 LangGraph 동시 Run 수로 Pod 확장하기
+# AKS · LangGraph 활성 스트림 기반 KEDA 확장 검증
 
-KEDA가 조회하는 `agent_runs_active`는 이제 백그라운드 작업이 아니라 **실제 HTTP SSE 응답에서 `graph.astream()`을 소비 중인 개수**다. 토큰마다 증가하지 않고 스트림당 1이며, 정상 완료·예외·연결 해제 시 감소한다. 확장 시험은 제어 가능한 LangGraph SSE 6개로, 종료 시험은 Microsoft Foundry 모델의 실제 텍스트 delta로 수행한다. TTFT나 운영 용량 실험은 아니다.
+AKS에서 LangGraph가 처리 중인 SSE 응답 수로 Pod를 확장할 수 있는지, 응답 중인 Pod를 정상 삭제해도 기존 클라이언트가 마지막 이벤트를 받는지 검증했습니다. 기능 검증이며, 사용자 TTFT와 운영 용량은 측정하지 않았습니다.
 
-**검증 결과: T1~T5 모두 PASS** (2026-11-20, Korea Central). 실험 후 전용 리소스 그룹, AKS 노드 그룹, Azure Monitor 관리 그룹의 삭제를 확인했다.
+- **확장·축소:** 제어 가능한 스트림 6개를 유지하자 Managed Prometheus의 합계가 6, Ready Pod가 3이 됐습니다. 부하 해제 후 Ready Pod는 1개로 돌아왔고 노드는 2대로 유지됐습니다.
+- **종료 중 응답:** Foundry 모델의 첫 텍스트를 받은 Pod를 지정 삭제하자 **새 요청은 503**을 받았지만 **기존 요청은 텍스트 delta 106개와 `done`**을 받았습니다.
+
+**결과: T1~T6 모두 PASS** (2026-11-20, Korea Central). 실험 후 전용 리소스 그룹, AKS 노드 그룹, Azure Monitor 관리 그룹의 삭제도 확인했습니다.
+
+> **판정 시 주의:** Pod 수가 줄었다는 사실만으로 기존 답변의 완료를 알 수 없습니다. T6에서는 삭제한 Pod와 클라이언트를 특정하고, 연결 종료가 아니라 SSE의 마지막 `done`을 확인했습니다.
+
+## 저장소 구성
+
+| 경로 | 내용 |
+|---|---|
+| [장표](deck/) | 편집 가능한 PowerPoint, YAML 원본, 한국어 발표 노트, 슬라이드별 PNG |
+| [설계](docs/superpowers/specs/2026-11-20-langgraph-aks-keda-design.md) · [구현 계획](docs/superpowers/plans/2026-11-20-langgraph-aks-keda.md) | 가설·범위·대안·구현 순서 |
+| [실측 증적](evidence/README.md) | [SSE 확장 관측](evidence/sse-cycle.json) · [모델 응답 중 종료](evidence/model-drain.json) |
+| [앱](app/) · [인프라](infra/) · [매니페스트](k8s/) | 에이전트와 부하 클라이언트, Azure 리소스, PodMonitor·KEDA 설정 |
+| [스크립트](scripts/) · [자동 테스트](tests/) | 생성·배포·판정·정리와 회귀 테스트 |
+
+## 장표
+
+[편집 가능한 PowerPoint v2](deck/langgraph-keda-v2.pptx) · [YAML 원본](deck/langgraph-keda-v2.yaml) · [발표 노트](deck/langgraph-keda-v2.script.md) · [전체 미리보기](deck/langgraph-keda-v2_render/contact_sheet.png) · [이전 상세판 10장](deck/langgraph-keda.pptx)
+
+### 1. 검증 샘플 구성
+
+부하 클라이언트와 Agent Runtime은 AKS 내부에 있습니다. 활성 스트림 수는 Managed Prometheus를 거쳐 KEDA로 전달되고, Foundry 모델은 응답 중 종료 시험에서만 호출됩니다.
+
+<a href="deck/langgraph-keda-v2_render/slide_01.png"><img src="deck/langgraph-keda-v2_render/slide_01.png" alt="AKS 내부의 SSE 요청과 클러스터 밖 Prometheus 및 Foundry의 데이터 경로" width="960"></a>
+
+### 01 스트림 검증
+
+#### 2. 스트림 검증 섹션
+
+<a href="deck/langgraph-keda-v2_render/slide_02.png"><img src="deck/langgraph-keda-v2_render/slide_02.png" alt="활성 SSE 계측과 종료 검증 섹션" width="960"></a>
+
+#### 3. 검증 매트릭스
+
+<a href="deck/langgraph-keda-v2_render/slide_03.png"><img src="deck/langgraph-keda-v2_render/slide_03.png" alt="T1부터 T6까지 수행 방법과 통과 기준" width="960"></a>
+
+#### 4. 실측 결과
+
+<a href="deck/langgraph-keda-v2_render/slide_04.png"><img src="deck/langgraph-keda-v2_render/slide_04.png" alt="Ready Pod 변화 시각과 별도 종료 시험의 기존 응답 완료 및 신규 요청 거절" width="960"></a>
+
+### 02 재현 및 정리
+
+#### 5. 재현 및 정리 섹션
+
+<a href="deck/langgraph-keda-v2_render/slide_05.png"><img src="deck/langgraph-keda-v2_render/slide_05.png" alt="확장 설정과 종료 예산 재현 섹션" width="960"></a>
+
+#### 6. 재현 설정
+
+<a href="deck/langgraph-keda-v2_render/slide_06.png"><img src="deck/langgraph-keda-v2_render/slide_06.png" alt="graph.astream 계측, KEDA 목표 2, Pod 전체 유예 120초 구성" width="960"></a>
+
+#### 7. 결과 정리
+
+<a href="deck/langgraph-keda-v2_render/slide_07.png"><img src="deck/langgraph-keda-v2_render/slide_07.png" alt="기능 시험 6건과 운영 적용 전에 별도 확인할 사항" width="960"></a>
 
 ## 무엇을 어떻게 검증했나
-
-**검증 장표(10장):** [PowerPoint 다운로드](deck/langgraph-keda.pptx) · [발표 노트](deck/langgraph-keda.script.md) · [편집용 YAML](deck/langgraph-keda.yaml) · [슬라이드별 PNG](deck/langgraph-keda_render/). 1~6장은 스트림 계측과 KEDA 확장, 7~10장은 실제 모델 응답 중 종료와 운영 적용 범위를 다룬다.
-
-[![장표 전체 미리보기](deck/langgraph-keda_render/contact_sheet.png)](deck/langgraph-keda.pptx)
 
 `LangGraph 그래프 실행 → Pod별 agent_runs_active → PodMonitor → Azure Managed Prometheus → KEDA → HPA → Deployment`
 
@@ -22,13 +71,6 @@ KEDA가 조회하는 `agent_runs_active`는 이제 백그라운드 작업이 아
 | T6 응답 중 종료 | Foundry `gpt-4.1-nano` 첫 delta 이후 해당 Pod를 정상 삭제. 새 요청은 503, 기존 클라이언트는 106개 delta와 `done`을 수신. 삭제 요청부터 완료 확인까지 62.5초 | PASS |
 
 T6은 축소 대상을 운에 맡기지 않고 **진행 중인 Pod를 지정 삭제**해 동일한 Kubernetes 종료 경로를 시험했다. `preStop`은 신규 스트림 거절 표시를 만들고 10초 대기한다. 이 10초는 Pod 전체 유예 120초에 포함된다. Uvicorn은 SIGTERM 후 최대 105초 동안 기존 요청을 기다린다. 모델 스트림에는 시험을 위해 delta당 0.6초 지연을 주었다. **62.5초는 모델 성능 수치가 아니며, 120초를 넘는 답변까지 보장하지 않는다.** Istio·BFF는 시험 경로에 없다. [SSE 확장 관측](evidence/sse-cycle.json) · [모델 종료 관측](evidence/model-drain.json)
-
-| 자료 | 내용 |
-|---|---|
-| [검증 설계](docs/superpowers/specs/2026-11-20-langgraph-aks-keda-design.md) · [구현 계획](docs/superpowers/plans/2026-11-20-langgraph-aks-keda.md) | 가설·범위·대안·통과 기준·구현 순서 |
-| [테스트 앱](app/) · [Azure 인프라](infra/) · [매니페스트](k8s/) | 실제 LangGraph, AKS 및 workspace, PodMonitor·KEDA 트리거 |
-| [실행 스크립트](scripts/) · [자동 테스트](tests/) | 생성·배포·실측 판정·정리, Python 및 Pester 회귀 테스트 |
-| [수행 증거](evidence/README.md) · [관측 JSON](evidence/scale-cycle.json) | 재조회 가능한 94개 관측점과 판정 근거 |
 
 ### 최초 백그라운드 Run 버전 실측 (2026-11-20, KST)
 
